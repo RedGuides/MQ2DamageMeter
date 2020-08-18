@@ -42,31 +42,34 @@ class DamageTrackingItem
 public:
 	const int AttackerID;
 	const std::string AttackerName;
-	SPAWNINFO const* AttackerSpawn;
+	PlayerClient const* AttackerSpawn;
 	std::multimap<int, HitItem> Hits;
+
+	DamageTrackingItem(int AttackerID, std::string_view AttackerName, PlayerClient const* AttackerSpawn) :
+		AttackerID(AttackerID), AttackerName(AttackerName), AttackerSpawn(AttackerSpawn), Hits({}) {}
 
 	int GetTotal(int DamagedID)
 	{
 		auto hits = Hits.equal_range(DamagedID);
 		return std::accumulate(hits.first, hits.second, 0,
-			[](int total, const HitItem& hit)
+			[](int total, const std::pair<const int, HitItem>& hit)
 			{
-				return total + hit.DamageCaused;
+				return total + hit.second.DamageCaused;
 			});
 	}
 
 	int GetTotal()
 	{
 		return std::accumulate(std::cbegin(Hits), std::cend(Hits), 0,
-			[](int total, const HitItem& hit)
+			[](int total, const std::pair<const int, HitItem>& hit)
 			{
-				return total + hit.DamageCaused;
+				return total + hit.second.DamageCaused;
 			});
 	}
 };
 
 // indexed by attacker ID
-std::map<int, std::unique_ptr<DamageTrackingItem>> damage_map;
+std::vector<std::unique_ptr<DamageTrackingItem>> damage_map;
 
 class CEverQuestHook
 {
@@ -82,17 +85,21 @@ public:
 	{
 		if (hit)
 		{
-			auto damage = damage_map.find(hit->AttackerID);
+			auto damage = std::find_if(std::begin(damage_map), std::end(damage_map),
+				[&hit](const std::unique_ptr<DamageTrackingItem>& damage_item)
+				{
+					return damage_item->AttackerID == hit->AttackerID;
+				});
+
 			if (damage == std::end(damage_map))
 			{
 				auto spawn = GetSpawnByID(hit->AttackerID);
 				damage = damage_map.emplace(
-					hit->AttackerID,
-					std::make_unique<DamageTrackingItem>(hit->AttackerID, spawn ? spawn->Name : "UNKNOWN", spawn)
-				).first;
+					std::end(damage_map),
+					std::make_unique<DamageTrackingItem>(hit->AttackerID, spawn ? spawn->Name : "UNKNOWN", spawn));
 			}
 
-			damage->second->Hits.emplace(hit->DamagedID, HitItem(*hit));
+			(*damage)->Hits.emplace(hit->DamagedID, HitItem(*hit));
 		}
 
 		return ReportSuccessfulHit__Trampoline(hit, output, actual);
@@ -472,7 +479,7 @@ PLUGIN_API void OnUpdateImGui()
 				if (sort_specs->SpecsChanged && damage_map.size() > 1)
 				{
 					std::sort(std::begin(damage_map), std::end(damage_map),
-						[&sort_specs](const std::unique_ptr<DamageTrackingItem>& a, const std::unique_ptr<DamageTrackingItem>& b)
+						[&sort_specs](std::unique_ptr<DamageTrackingItem>& a, std::unique_ptr<DamageTrackingItem>& b)
 						{
 							for (int n = 0; n < sort_specs->SpecsCount; ++n)
 							{
