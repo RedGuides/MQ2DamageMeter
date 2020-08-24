@@ -10,6 +10,8 @@
 PreSetup("MQ2DamageMeter");
 PLUGIN_VERSION(0.1);
 
+// TODO: These need to be configurable so when the strings data changes it won't take a recompile (though this is very rare)
+// these map to entries in eqstr_us.txt
 #define SELF_DOT_STRINGID 9072
 #define OTHER_DOT_STRINGID 13327
 #define ONME_DOT_STRINGID 12954
@@ -33,24 +35,29 @@ enum DamageTrackingCategory
 class HitItem : public EQSuccessfulHit
 {
 public:
+	const std::string Name;
 	const DWORD Timestamp;
-	HitItem(const EQSuccessfulHit& hit) : EQSuccessfulHit(hit), Timestamp(EQGetTime()) {}
+
+	HitItem(const EQSuccessfulHit& hit, std::string_view Name) : 
+		EQSuccessfulHit(hit),
+		Name(Name),
+		Timestamp(EQGetTime())
+	{}
 };
 
 class DamageTrackingItem
 {
 public:
-	const int AttackerID;
-	const std::string AttackerName;
-	PlayerClient const* AttackerSpawn;
-	std::multimap<int, HitItem> Hits;
+	const int ID;
+	const std::string Name;
+	std::multimap<const int, const HitItem> Hits;
 
-	DamageTrackingItem(int AttackerID, std::string_view AttackerName, PlayerClient const* AttackerSpawn) :
-		AttackerID(AttackerID), AttackerName(AttackerName), AttackerSpawn(AttackerSpawn), Hits({}) {}
+	DamageTrackingItem(int ID, std::string_view Name) :
+		ID(ID), Name(Name), Hits({}) {}
 
-	int GetTotal(int DamagedID)
+	int GetTotal(int HitID) const
 	{
-		auto hits = Hits.equal_range(DamagedID);
+		auto hits = Hits.equal_range(HitID);
 		return std::accumulate(hits.first, hits.second, 0,
 			[](int total, const std::pair<const int, HitItem>& hit)
 			{
@@ -58,7 +65,7 @@ public:
 			});
 	}
 
-	int GetTotal()
+	int GetTotal() const
 	{
 		return std::accumulate(std::cbegin(Hits), std::cend(Hits), 0,
 			[](int total, const std::pair<const int, HitItem>& hit)
@@ -66,10 +73,108 @@ public:
 				return total + hit.second.DamageCaused;
 			});
 	}
+
+	bool Compare(const ImGuiTableSortSpecs* sort_specs, const std::unique_ptr<DamageTrackingItem>& other) const
+	{
+		for (int n = 0; n < sort_specs->SpecsCount; ++n)
+		{
+			auto sort_spec = sort_specs->Specs[n];
+			switch (sort_spec.ColumnIndex)
+			{
+			case 0: // Name
+				if (sort_spec.SortDirection == ImGuiSortDirection_Ascending)
+					return Name < other->Name;
+
+				if (sort_spec.SortDirection == ImGuiSortDirection_Descending)
+					return Name > other->Name;
+
+				break;
+
+			case 1: // Damage
+				if (sort_spec.SortDirection == ImGuiSortDirection_Ascending)
+					return GetTotal() < other->GetTotal();
+
+				if (sort_spec.SortDirection == ImGuiSortDirection_Descending)
+					return GetTotal() > other->GetTotal();
+
+				break;
+
+			default:
+				break;
+			}
+		}
+
+		return GetTotal() < other->GetTotal();
+	}
+
+	std::vector<DamageTrackingItem> GetBreakdown()
+	{
+		return std::accumulate(std::cbegin(Hits), std::cend(Hits), std::vector<DamageTrackingItem>({}),
+			[](std::vector<DamageTrackingItem>& items, const std::pair<const int, HitItem>& hit)
+			{
+				auto last = items.rbegin();
+				if (last != items.rend() && last->ID == hit.first)
+				{
+					// modify last entry, same ID
+					last->Hits.emplace(hit);
+				}
+				else
+				{
+					// add new entry, ID doesn't exist
+					auto& item = items.emplace_back(hit.first, hit.second.Name);
+					item.Hits.emplace(hit);
+				}
+
+				return items;
+			});
+	}
+
+	template <int flags>
+	bool ShowProgressBar(int total)
+	{
+		auto hitTotal = GetTotal();
+		ImGui::TableNextRow();
+
+		auto open = ImGui::TreeNodeEx(Name.c_str(), flags);
+		ImGui::TableNextCell();
+		ImGui::ProgressBar((float)hitTotal / total, ImVec2(-FLT_MIN, 0.f), std::to_string(hitTotal).c_str());
+
+		return open;
+	}
 };
 
 // indexed by attacker ID
 std::vector<std::unique_ptr<DamageTrackingItem>> damage_map;
+void AddDamage(const EQSuccessfulHit& hit)
+{
+	auto attackerID = hit.AttackerID;
+	auto attackerSpawn = GetSpawnByID(attackerID);
+	if (attackerSpawn && attackerSpawn->MasterID > 0)
+	{
+		attackerID = attackerSpawn->MasterID;
+		attackerSpawn = GetSpawnByID(attackerID);
+		// TODO: when tracking skill, set this to the pet ID (or something similar? need a way to resolve the pet's name in the skill display)
+		// All the information we need is actually stored in the hit, so just need to track a special skill/spellID
+	}
+
+	auto damage = std::find_if(std::begin(damage_map), std::end(damage_map),
+		[&attackerID](const std::unique_ptr<DamageTrackingItem>& damage_item)
+		{
+			return damage_item->ID == attackerID;
+		});
+
+	if (damage == std::end(damage_map))
+	{
+		damage = damage_map.emplace(
+			std::end(damage_map),
+			std::make_unique<DamageTrackingItem>(hit.AttackerID, attackerSpawn != nullptr ? attackerSpawn->Name : "UNKNOWN"));
+	}
+
+	// TODO: can the name and spawn change per ID? unlikely, but make sure we clear the list on zone to be safe (and perhaps log it?)
+
+	auto damagedSpawn = GetSpawnByID(hit.DamagedID);
+	(*damage)->Hits.emplace(hit.DamagedID, HitItem(hit, damagedSpawn != nullptr ? damagedSpawn->Name : "UNKNOWN"));
+}
 
 class CEverQuestHook
 {
@@ -83,23 +188,9 @@ public:
 	char ReportSuccessfulHit__Trampoline(EQSuccessfulHit*, bool, int);
 	char ReportSuccessfulHit__Detour(EQSuccessfulHit* hit, bool output, int actual)
 	{
-		if (hit)
+		if (hit && hit->DamageCaused > 0)
 		{
-			auto damage = std::find_if(std::begin(damage_map), std::end(damage_map),
-				[&hit](const std::unique_ptr<DamageTrackingItem>& damage_item)
-				{
-					return damage_item->AttackerID == hit->AttackerID;
-				});
-
-			if (damage == std::end(damage_map))
-			{
-				auto spawn = GetSpawnByID(hit->AttackerID);
-				damage = damage_map.emplace(
-					std::end(damage_map),
-					std::make_unique<DamageTrackingItem>(hit->AttackerID, spawn ? spawn->Name : "UNKNOWN", spawn));
-			}
-
-			(*damage)->Hits.emplace(hit->DamagedID, HitItem(*hit));
+			AddDamage(*hit);
 		}
 
 		return ReportSuccessfulHit__Trampoline(hit, output, actual);
@@ -109,18 +200,57 @@ public:
 DETOUR_TRAMPOLINE_EMPTY(char* CEverQuestHook::ReportSuccessfulHeal__Trampoline(EQSuccessfulHeal*))
 DETOUR_TRAMPOLINE_EMPTY(char CEverQuestHook::ReportSuccessfulHit__Trampoline(EQSuccessfulHit*, bool, int))
 
+// This is just for testing, remove it because the disassembly appears to always call ReportSuccessfulHit from here
+#define __msgReportSuccessfulHit_x 0x5AA0B0
+INITIALIZE_EQGAME_OFFSET(__msgReportSuccessfulHit);
+void msgReportSuccessfulHit_Trampoline(unsigned int, unsigned short*);
+void msgReportSuccessfulHit_Detour(unsigned int param_1, unsigned short* param_1_00)
+{
+	auto hit = reinterpret_cast<EQSuccessfulHit*>(param_1_00);
+	return msgReportSuccessfulHit_Trampoline(param_1, param_1_00);
+}
+DETOUR_TRAMPOLINE_EMPTY(void msgReportSuccessfulHit_Trampoline(unsigned int, unsigned short*))
+
 int SelfCallbackID = -1;
 int OtherCallbackID = -1;
 int OnmeCallbackID = -1;
 
 void SelfDotCallback(const mq::TokenTextParam& param)
-{}
+{
+	// %1 has taken %2 damage from your %3.%4
+	std::string_view targetName = param.Tokens.at(0);
+	std::string_view damageString = param.Tokens.at(1);
+	std::string_view spellName = param.Tokens.at(2);
+	std::string_view critString = param.Tokens.at(3); // could be empty
+
+	DebugSpewAlways("StringID: %d World: %d Color: %d Tokens:", param.StringID, param.World, param.Color);
+	for (auto& token : param.Tokens)
+	{
+		DebugSpewAlways("%s", token.c_str());
+	}
+	//EQSuccessfulHit hit({
+	//	/*0x00*/ uint16_t      DamagedID;                // Spawn that was hit
+	///*0x02*/ uint16_t      AttackerID;               // Spawn who did the hit
+	///*0x04*/ uint8_t       Skill;                    // 1 HS etc...
+	///*0x05*/ int           SpellID;
+	///*0x09*/ int           DamageCaused;
+	///*0x0d*/ float         Force;
+	///*0x11*/ float         HitHeading;
+	///*0x15*/ float         HitPitch;
+	///*0x19*/ bool          bSecondary;
+	///*0x1a*/ uint8_t       Unknown0x1A[6];
+	//	});
+}
 
 void OtherDotCallback(const mq::TokenTextParam& param)
-{}
+{
+	// %1 has taken %2 damage from %3 by %4.%5
+}
 
 void OnmeDotCallback(const mq::TokenTextParam& param)
-{}
+{
+	// You have taken %1 damage from %2 by %3.%4
+}
 
 /**
  * @fn InitializePlugin
@@ -134,6 +264,8 @@ PLUGIN_API void InitializePlugin()
 
 	EzDetour(CEverQuest__ReportSuccessfulHeal, &CEverQuestHook::ReportSuccessfulHeal__Detour, &CEverQuestHook::ReportSuccessfulHeal__Trampoline);
 	EzDetour(CEverQuest__ReportSuccessfulHit, &CEverQuestHook::ReportSuccessfulHit__Detour, &CEverQuestHook::ReportSuccessfulHit__Trampoline);
+
+	EzDetour(__msgReportSuccessfulHit, &msgReportSuccessfulHit_Detour, &msgReportSuccessfulHit_Trampoline);
 
 	SelfCallbackID = AddTokenMessageCmd(SELF_DOT_STRINGID, SelfDotCallback);
 	OtherCallbackID = AddTokenMessageCmd(OTHER_DOT_STRINGID, OtherDotCallback);
@@ -157,6 +289,8 @@ PLUGIN_API void ShutdownPlugin()
 
 	RemoveDetour(CEverQuest__ReportSuccessfulHeal);
 	RemoveDetour(CEverQuest__ReportSuccessfulHit);
+
+	RemoveDetour(__msgReportSuccessfulHit);
 
 	if (SelfCallbackID >= 0)
 		RemoveTokenMessageCmd(SELF_DOT_STRINGID, SelfCallbackID);
@@ -472,46 +606,14 @@ PLUGIN_API void OnUpdateImGui()
 		{
 			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Damage", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthStretch);
-
-			if (auto sort_specs = ImGui::TableGetSortSpecs())
+			
+			auto sort_specs = ImGui::TableGetSortSpecs();
+			// TODO: Optimize by tracking here if damage has changed (simple case, it would be ideal to track if damage _order_ has changed)
+			if (sort_specs != nullptr && sort_specs->SpecsChanged && damage_map.size() > 1)
 			{
-				// TODO: Need to track here if damage has changed (simple case, it would be ideal to track if damage _order_ has changed)
-				if (sort_specs->SpecsChanged && damage_map.size() > 1)
-				{
-					std::sort(std::begin(damage_map), std::end(damage_map),
-						[&sort_specs](std::unique_ptr<DamageTrackingItem>& a, std::unique_ptr<DamageTrackingItem>& b)
-						{
-							for (int n = 0; n < sort_specs->SpecsCount; ++n)
-							{
-								auto sort_spec = sort_specs->Specs[n];
-								switch (sort_spec.ColumnIndex)
-								{
-								case 0: // Name
-									if (sort_spec.SortDirection == ImGuiSortDirection_Ascending)
-										return a->AttackerName < b->AttackerName;
-
-									if (sort_spec.SortDirection == ImGuiSortDirection_Descending)
-										return a->AttackerName > b->AttackerName;
-
-									break;
-
-								case 1: // Damage
-									if (sort_spec.SortDirection == ImGuiSortDirection_Ascending)
-										return a->GetTotal() < b->GetTotal();
-
-									if (sort_spec.SortDirection == ImGuiSortDirection_Descending)
-										return a->GetTotal() > b->GetTotal();
-
-									break;
-
-								default:
-									break;
-								}
-							}
-
-							return a->GetTotal() < b->GetTotal();
-						});
-				}
+				std::sort(std::begin(damage_map), std::end(damage_map),
+					[&sort_specs](const std::unique_ptr<DamageTrackingItem>& a, const std::unique_ptr<DamageTrackingItem>& b)
+					{ return a->Compare(sort_specs, b); });
 			}
 
 			ImGui::TableAutoHeaders();
@@ -528,13 +630,16 @@ PLUGIN_API void OnUpdateImGui()
 			{
 				for (int n = clipper.DisplayStart; n < clipper.DisplayEnd; ++n)
 				{
-					ImGui::PushID(damage_map[n]->AttackerID);
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0);
-                    ImGui::TextUnformatted(damage_map[n]->AttackerName.c_str());
-                    ImGui::TableSetColumnIndex(1);
-					ImGui::ProgressBar((float)damage_map[n]->GetTotal() / totalDamage, ImVec2(-FLT_MIN, 0.f), std::to_string(damage_map[n]->GetTotal()).c_str());
-                    ImGui::PopID();
+					ImGui::PushID(damage_map[n]->ID);
+					if (damage_map[n]->ShowProgressBar<ImGuiTreeNodeFlags_SpanFullWidth>(totalDamage))
+					{
+						for (auto& hit : damage_map[n]->GetBreakdown())
+						{
+							hit.ShowProgressBar<ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanFullWidth>(totalDamage);
+						}
+						ImGui::TreePop();
+					}
+					ImGui::PopID();
 				}
 			}
 
