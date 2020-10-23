@@ -136,7 +136,10 @@ public:
 		ImGui::TableNextRow();
 
 		auto open = ImGui::TreeNodeEx(Name.c_str(), flags);
-		ImGui::TableNextCell();
+		ImGui::TableNextColumn();
+		ImGui::Text(Name.c_str());
+
+		ImGui::TableNextColumn();
 		ImGui::ProgressBar((float)hitTotal / total, ImVec2(-FLT_MIN, 0.f), std::to_string(hitTotal).c_str());
 
 		return open;
@@ -600,23 +603,26 @@ PLUGIN_API void OnUpdateImGui()
 		static ImGuiTableFlags flags =
 			ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_MultiSortable
 			| ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV
-			| ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollFreezeTopRow;
+			| ImGuiTableFlags_ScrollY;
 
 		if (ImGui::BeginTable("##barchart", 2, flags))
 		{
+			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Damage", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthStretch);
 			
 			auto sort_specs = ImGui::TableGetSortSpecs();
 			// TODO: Optimize by tracking here if damage has changed (simple case, it would be ideal to track if damage _order_ has changed)
-			if (sort_specs != nullptr && sort_specs->SpecsChanged && damage_map.size() > 1)
+			if (sort_specs != nullptr && sort_specs->SpecsDirty && damage_map.size() > 1)
 			{
 				std::sort(std::begin(damage_map), std::end(damage_map),
 					[&sort_specs](const std::unique_ptr<DamageTrackingItem>& a, const std::unique_ptr<DamageTrackingItem>& b)
 					{ return a->Compare(sort_specs, b); });
+
+				sort_specs->SpecsDirty = false;
 			}
 
-			ImGui::TableAutoHeaders();
+			ImGui::TableHeadersRow();
 			ImGuiListClipper clipper;
 			clipper.Begin(damage_map.size());
 
