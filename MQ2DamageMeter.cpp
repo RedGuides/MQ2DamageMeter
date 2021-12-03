@@ -40,7 +40,7 @@ public:
 	const std::string Name;
 	const DWORD Timestamp;
 
-	HitInstance(const EQSuccessfulHit& hit, std::string_view Name) : 
+	HitInstance(const EQSuccessfulHit& hit, std::string_view Name) :
 		EQSuccessfulHit(hit),
 		Name(Name),
 		Timestamp(EQGetTime())
@@ -162,6 +162,21 @@ void AddDamage(const EQSuccessfulHit& hit)
 		// All the information we need is actually stored in the hit, so just need to track a special skill/spellID
 	}
 
+
+	if (attackerSpawn) {
+		//Don't list NPC's. (Can add a toggle here later).
+		if (attackerSpawn->Type == SPAWN_NPC)
+			return;
+
+		//If it's not Group/Guild/Raid/Fellowship Skip.
+		if (!IsGroupMember(attackerSpawn) && !IsRaidMember(attackerSpawn) && !IsFellowshipMember(attackerSpawn->Name) && !IsGuildMember(attackerSpawn->Name))
+			return;
+
+		//If it's more than ??? distance from me, ignore it? Trying 300. Sorry, it's a magic number.
+		if (pLocalPlayer && EstimatedDistanceToSpawn(attackerSpawn, pLocalPlayer) > 300)
+			return;
+	}
+
 	auto damage = std::find_if(damage_map.begin(), damage_map.end(),
 		[&attackerID](const std::unique_ptr<AttackerTracking>& damage_item)
 		{
@@ -172,7 +187,7 @@ void AddDamage(const EQSuccessfulHit& hit)
 	{
 		damage = damage_map.emplace(
 			damage,
-			std::make_unique<AttackerTracking>(hit.AttackerID, attackerSpawn != nullptr ? attackerSpawn->Name : "UNKNOWN"));
+			std::make_unique<AttackerTracking>(attackerID, attackerSpawn != nullptr ? attackerSpawn->Name : "UNKNOWN"));
 	}
 
 	// TODO: can the name and spawn change per ID? unlikely, but make sure we clear the list on zone to be safe (and perhaps log it?)
@@ -234,6 +249,12 @@ void OnmeDotCallback(const mq::TokenTextParam& param)
 	// You have taken %1 damage from %2 by %3.%4
 }
 
+void DamageMeterCmd(SPAWNINFO* pSpawn, char* szLine) {
+	if (!_stricmp(szLine, "clear")) {
+		damage_map.clear();
+	}
+}
+
 /**
  * @fn InitializePlugin
  *
@@ -250,6 +271,7 @@ PLUGIN_API void InitializePlugin()
 	SelfCallbackID = AddTokenMessageCmd(SELF_DOT_STRINGID, SelfDotCallback);
 	OtherCallbackID = AddTokenMessageCmd(OTHER_DOT_STRINGID, OtherDotCallback);
 	OnmeCallbackID = AddTokenMessageCmd(ONME_DOT_STRINGID, OnmeDotCallback);
+	AddCommand("/damagemeter", DamageMeterCmd);
 }
 
 /**
@@ -273,6 +295,8 @@ PLUGIN_API void ShutdownPlugin()
 
 	if (OnmeCallbackID >= 0)
 		RemoveTokenMessageCmd(ONME_DOT_STRINGID, OnmeCallbackID);
+
+	RemoveCommand("/damagemeter");
 }
 
 /**
@@ -306,7 +330,7 @@ PLUGIN_API void OnUpdateImGui()
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Damage", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthStretch);
-			
+
 			auto sort_specs = ImGui::TableGetSortSpecs();
 			// TODO: Optimize by tracking here if damage has changed (simple case, it would be ideal to track if damage _order_ has changed)
 			if (sort_specs != nullptr && sort_specs->SpecsDirty && damage_map.size() > 1)
