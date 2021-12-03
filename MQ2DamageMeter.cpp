@@ -184,11 +184,13 @@ void AddDamage(const EQSuccessfulHit& hit)
 class CEverQuestHook
 {
 public:
+	char* ReportSuccessfulHeal__Trampoline(EQSuccessfulHeal*);
 	char* ReportSuccessfulHeal__Detour(EQSuccessfulHeal* heal)
 	{
 		return ReportSuccessfulHeal__Trampoline(heal);
 	}
 
+	char ReportSuccessfulHit__Trampoline (EQSuccessfulHit*, bool, int);
 	char ReportSuccessfulHit__Detour(EQSuccessfulHit* hit, bool output, int actual)
 	{
 		if (hit && hit->DamageCaused > 0)
