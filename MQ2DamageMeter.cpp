@@ -184,13 +184,13 @@ void AddDamage(const EQSuccessfulHit& hit)
 class CEverQuestHook
 {
 public:
-	char* ReportSuccessfulHeal__Trampoline(EQSuccessfulHeal*);
+	DETOUR_TRAMPOLINE_DEF(char*, ReportSuccessfulHeal__Trampoline, (EQSuccessfulHeal*))
 	char* ReportSuccessfulHeal__Detour(EQSuccessfulHeal* heal)
 	{
 		return ReportSuccessfulHeal__Trampoline(heal);
 	}
 
-	char ReportSuccessfulHit__Trampoline (EQSuccessfulHit*, bool, int);
+	DETOUR_TRAMPOLINE_DEF(char,  ReportSuccessfulHit__Trampoline, (EQSuccessfulHit*, bool, int))
 	char ReportSuccessfulHit__Detour(EQSuccessfulHit* hit, bool output, int actual)
 	{
 		if (hit && hit->DamageCaused > 0)
@@ -201,9 +201,6 @@ public:
 		return ReportSuccessfulHit__Trampoline(hit, output, actual);
 	}
 };
-
-DETOUR_TRAMPOLINE_EMPTY(char* CEverQuestHook::ReportSuccessfulHeal__Trampoline(EQSuccessfulHeal*))
-DETOUR_TRAMPOLINE_EMPTY(char CEverQuestHook::ReportSuccessfulHit__Trampoline(EQSuccessfulHit*, bool, int))
 
 int SelfCallbackID = -1;
 int OtherCallbackID = -1;
@@ -320,7 +317,7 @@ PLUGIN_API void OnUpdateImGui()
 
 			ImGui::TableHeadersRow();
 			ImGuiListClipper clipper;
-			clipper.Begin(damage_map.size());
+			clipper.Begin((int)damage_map.size());
 
 			// TODO: Pre-calculuate the numbers we care about based on the GUI selections for display here
 
